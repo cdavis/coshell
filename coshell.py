@@ -1,9 +1,10 @@
-#!/usr/bin/python
+#!/usr/bin/python2.5
 
 import sys, os, pwd, fcntl, struct, cPickle, traceback, signal, atexit
 import tty, termios, pty
 from select import select
 from socket import *
+
 
 PWENT = pwd.getpwuid( os.geteuid() )
 USERNAME = PWENT.pw_name
@@ -250,7 +251,7 @@ class CoShellServer:
     (pid,fd) = pty.fork()
     # Child becomes the shell
     if pid == 0:
-      os.execv(self.shell,[])
+      os.execv(self.shell,[self.shell])
       sys.exit(42)
     # Parent
     self.child_pid = pid
