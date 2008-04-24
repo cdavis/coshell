@@ -1,4 +1,4 @@
-#!/usr/bin/python2.5
+#!/usr/bin/env python2.5
 
 import sys, os, pwd, fcntl, struct, cPickle, traceback, signal, atexit
 import tty, termios, pty
