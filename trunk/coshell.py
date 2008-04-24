@@ -325,7 +325,7 @@ class CoShellClient:
 if __name__ == '__main__':
   from getopt import getopt
 
-  if len(sys.argv) != 2 or '-h' in sys.argv:
+  if len(sys.argv) < 2 or '-h' in sys.argv:
     print '''Usage: %s [options] [server]
 
 Options:
