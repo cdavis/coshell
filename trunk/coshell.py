@@ -50,7 +50,7 @@ class CoShellServer:
       self.socket = sock
       self.ip = addr[0]
       self.id = self.id_counter
-      self.id_counter += 1
+      self.__class__.id_counter += 1
       self.registered = False
       self.tty_input_allowed = False
       self.name = None
@@ -105,7 +105,7 @@ class CoShellServer:
       self.socket.close()
 
     def __str__(self):
-      s = '(%d) %s [%s]' % (self.id,self.name,self.ip)
+      s = '%d) %s [%s]' % (self.id,self.name,self.ip)
       if self.tty_input_allowed:
         s += ' [privileged]'
       return s
@@ -209,7 +209,7 @@ class CoShellServer:
               if not found:
                 print 'No client with that ID exists'
               #Show 'em the client list & menu again
-              self.stdout_buffer += '\n' + self.client_listing() + self.user_menu()
+              self.stdout_buffer += self.client_listing() + self.user_menu()
               toWrite.add(stdout)
           else: #Shell already started, its just user tty input
             tty_input = os.read(stdin,CHUNK_SIZE)
@@ -252,7 +252,7 @@ class CoShellServer:
         return
       client.register( message['registration'] )
       connect_msg = "%s [%s] has connected\n" % (client.name,client.ip)
-      self.stdout_buffer += connect_msg
+      self.stdout_buffer += connect_msg + self.user_menu()
       for other_client in self.clients:
         if other_client is client: continue
         other_client.buffer_append(connect_msg)
@@ -265,7 +265,7 @@ class CoShellServer:
         self.tty_buffer += message['tty_input']
 
   def user_menu(self):
-    return 's) start shell\tl) list clients\tp) toggle control privileges for a client\n'
+    return '\ns) start shell\tl) list clients\tp) toggle control privileges for a client\n'
 
   def start_shell(self):
     (pid,fd) = pty.fork()
@@ -278,7 +278,10 @@ class CoShellServer:
     self.tty = fd
 
   def client_listing(self):
-    return '\n'.join( [str(client) for client in self.clients] ) + '\n'
+    plurality = (len(self.clients) > 1 and "s") or ""
+    heading = '\n[ %d client%s connected ]\n' % (len(self.clients),plurality)
+    listing = '\n'.join( [str(client) for client in sorted(self.clients,key=lambda c: c.id)] )
+    return heading + listing + '\n'
 
 
 class CoShellClient:
