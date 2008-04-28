@@ -245,6 +245,9 @@ class CoShellServer:
         if self.tty is not None:
           self.tty_buffer += INTERRUPT
           toWrite.add(self.tty)
+        else:
+          print "Exitting coshell"
+          raise SystemExit(0)
 
   def handle_message(self,client,message):
     if not client.registered:
