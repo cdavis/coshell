@@ -1,18 +1,38 @@
-#!/usr/bin/env python2.5
+#!/usr/bin/env python
+"""Copyright 2008 Chris Davis (chrismd@gmail.com)
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License."""
 
 import sys, os, pwd, fcntl, struct, cPickle, traceback, signal, atexit
 import tty, termios, pty
+import socket
 from select import select
-from socket import *
 
+#Simple python version test
+major,minor = sys.version_info[:2]
+if major < 2 or (major == 2 and minor < 4):
+  version_str = sys.version.split()[0]
+  print "You are using python %s, but version 2.4 or greater is required" % version_str
+  raise SystemExit(1)
 
+#Global constants
 PWENT = pwd.getpwuid( os.geteuid() )
 USERNAME = PWENT.pw_name
-HOSTNAME = gethostname()
+HOSTNAME = socket.gethostname()
 DEFAULT_SHELL = PWENT.pw_shell
 DEFAULT_PORT = 3608
 CHUNK_SIZE = 8192
-INTERRUPT_BYTE = chr(3)
+INTERRUPT = chr(3)
 
 
 class CoShellServer:
@@ -93,8 +113,8 @@ class CoShellServer:
 
   #CoShellServer methods
   def run(self):
-    listener = socket()
-    listener.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind( (self.address,self.port) )
     listener.listen(5)
     print "Listening on port %d" % self.port
@@ -222,7 +242,7 @@ class CoShellServer:
         if self.tty_buffer:
           toWrite.add(self.tty)
       except KeyboardInterrupt:
-        self.tty_buffer += INTERRUPT_BYTE
+        self.tty_buffer += INTERRUPT
         toWrite.add(self.tty)
 
   def handle_message(self,client,message):
@@ -252,7 +272,7 @@ class CoShellServer:
     # Child becomes the shell
     if pid == 0:
       os.execv(self.shell,[self.shell])
-      sys.exit(42)
+      raise SystemExit(42)
     # Parent
     self.child_pid = pid
     self.tty = fd
@@ -271,7 +291,7 @@ class CoShellClient:
     self.name = USERNAME
 
   def run(self):
-    self.socket = socket()
+    self.socket = socket.socket()
     self.socket.connect( (self.server,self.port) )
     self.socket_send_buffer = self.create_message(registration=self.name)
 
@@ -313,7 +333,7 @@ class CoShellClient:
           else:
             toWrite.discard(self.socket)
       except KeyboardInterrupt:
-        self.socket_send_buffer += self.create_message(tty_input=INTERRUPT_BYTE)
+        self.socket_send_buffer += self.create_message(tty_input=INTERRUPT)
 	toWrite.add(self.socket)
 
   def create_message(self,**obj):
@@ -324,25 +344,29 @@ class CoShellClient:
 
 
 if __name__ == '__main__':
-  from getopt import getopt
+  from optparse import OptionParser
 
-  if len(sys.argv) < 2 or '-h' in sys.argv:
-    print '''Usage: %s [options] [server]
+  option_parser = OptionParser(usage='%prog [options] [hostname]\n')
+  option_parser.add_option('-s','--server',action='store_true',default=False,
+    help="run a coshell server")
+  option_parser.add_option('-p','--port',default=DEFAULT_PORT,
+    help="connect to or listen on the given port")
 
-Options:
-	-p port		Connect to / listen on port
-	-h		This help screen
-''' % os.path.basename(sys.argv[0])
-    sys.exit(1)
+  (options,args) = option_parser.parse_args()
 
-  port = DEFAULT_PORT
-  (opts,args) = getopt(sys.argv[1:],"p:")
-  for opt,val in opts:
-    if opt == '-p': port = int(val)
+  if not (options.server or args):
+    option_parser.print_usage()
+    raise SystemExit(1)
 
-  if args[0] == 'server':
-    server = CoShellServer(port=port)
-    server.run()
+  if options.server:
+    coshell = CoShellServer(port=options.port)
   else:
-    client = CoShellClient(args[0],port)
-    client.run()
+    hostname = args[0]
+    coshell = CoShellClient(hostname,port=options.port)
+  try:
+    coshell.run()
+    raise SystemExit(0)
+  except (socket.error,socket.gaierror), e:
+    error_num, error_message = e.args
+    print 'Socket error: %s' % error_message
+  raise SystemExit(1)
