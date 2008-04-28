@@ -353,7 +353,7 @@ if __name__ == '__main__':
   option_parser = OptionParser(usage='%prog [options] [hostname]\n')
   option_parser.add_option('-s','--server',action='store_true',default=False,
     help="run a coshell server")
-  option_parser.add_option('-p','--port',default=DEFAULT_PORT,
+  option_parser.add_option('-p','--port',type='int',default=DEFAULT_PORT,
     help="connect to or listen on the given port")
 
   (options,args) = option_parser.parse_args()
