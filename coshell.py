@@ -242,8 +242,9 @@ class CoShellServer:
         if self.tty_buffer:
           toWrite.add(self.tty)
       except KeyboardInterrupt:
-        self.tty_buffer += INTERRUPT
-        toWrite.add(self.tty)
+        if self.tty is not None:
+          self.tty_buffer += INTERRUPT
+          toWrite.add(self.tty)
 
   def handle_message(self,client,message):
     if not client.registered:
