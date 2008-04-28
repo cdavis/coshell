@@ -78,7 +78,7 @@ class CoShellServer:
 
     def receive_messages(self):
       packet = self.socket.recv(CHUNK_SIZE)
-      assert packet, "%s connection lost" % self.name
+      assert packet
       self.recv_buffer += packet
       self.__process_recv_buffer()
 
@@ -222,7 +222,7 @@ class CoShellServer:
             try:
               client.receive_messages()
             except:
-              traceback.print_exc()
+              print "Client %s (%s) connection lost" % (client.name,client.ip)
               client.disconnect()
               self.clients.discard(client)
               toRead.discard(client)
