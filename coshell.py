@@ -107,7 +107,7 @@ class CoShellServer:
     def __str__(self):
       s = '(%d) %s [%s]' % (self.id,self.name,self.ip)
       if self.tty_input_allowed:
-        s += ' *'
+        s += ' [privileged]'
       return s
     __repr__ = __str__
 
@@ -147,10 +147,10 @@ class CoShellServer:
             data = os.read(self.tty, CHUNK_SIZE)
           except:
             print "Shell exitted"
-            os.close(self.tty)
-            os.wait()
             for client in self.clients:
               client.disconnect()
+            os.close(self.tty)
+            os.wait()
             return
           self.stdout_buffer += data
           toWrite.add(stdout)
