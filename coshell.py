@@ -13,10 +13,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License."""
 
-import sys, os, pwd, fcntl, struct, cPickle, traceback, signal, atexit
+import sys, os, pwd, fcntl, struct, cPickle, traceback
+import errno, signal, atexit
 import tty, termios, pty
 import socket
-from select import select
+from select import select, error as selectError
 
 #Simple python version test
 major,minor = sys.version_info[:2]
@@ -53,21 +54,25 @@ class CoShellServer:
       self.__class__.id_counter += 1
       self.registered = False
       self.tty_input_allowed = False
+      self.terminal_size = (0,0)
       self.name = None
       self.send_buffer = ""
       self.recv_buffer = ""
       self.message_queue = []
       self.incoming_message_size = 0
 
-    def register(self,name):
+    def register(self,name,rows,cols):
       self.name = name
+      self.terminal_size = (rows,cols)
       self.registered = True
 
     def fileno(self):
       return self.socket.fileno()
 
-    def buffer_append(self,data):
-      self.send_buffer += data
+    def buffer_message(self,**data):
+      message = cPickle.dumps(data)
+      header = struct.pack("!L",len(message))
+      self.send_buffer += header + message
 
     def buffer_not_empty(self):
       return bool(self.send_buffer)
@@ -132,7 +137,12 @@ class CoShellServer:
 
     while True:
       try:
-        readable,writable = select(toRead,toWrite,[])[:2]
+        try:
+          readable,writable = select(toRead,toWrite,[])[:2]
+        except selectError, e:
+          if e.args[0] == errno.EINTR: # SIGWINCH causes this
+            continue
+          raise
 
         #Accept new client connections
         if listener in readable:
@@ -155,7 +165,7 @@ class CoShellServer:
           self.stdout_buffer += data
           toWrite.add(stdout)
           for client in self.clients:
-            client.buffer_append(data)
+            client.buffer_message(tty_input=data)
           toWrite |= self.clients
 
         #Write pending tty output to stdout
@@ -222,6 +232,7 @@ class CoShellServer:
             try:
               client.receive_messages()
             except:
+              traceback.print_exc()
               print "Client %s (%s) connection lost" % (client.name,client.ip)
               client.disconnect()
               self.clients.discard(client)
@@ -254,19 +265,23 @@ class CoShellServer:
       if 'registration' not in message:
         client.disconnect()
         return
-      client.register( message['registration'] )
+      client.register( **message['registration'] )
       connect_msg = "%s [%s] has connected\n" % (client.name,client.ip)
       self.stdout_buffer += connect_msg + self.user_menu()
       for other_client in self.clients:
         if other_client is client: continue
-        other_client.buffer_append(connect_msg)
+        other_client.buffer_message(tty_input=connect_msg)
       welcome_message = "Welcome %s, the following clients are connected\n%s" % (client.name,self.client_listing())
-      client.buffer_append(welcome_message)
+      client.buffer_message(tty_input=welcome_message)
       return
 
     if client.tty_input_allowed:
       if 'tty_input' in message:
         self.tty_buffer += message['tty_input']
+
+    if 'sigwinch' in message:
+      client.terminal_size = message['sigwinch']
+      self.adjust_window_size()
 
   def user_menu(self):
     return '\ns) start shell\tl) list clients\tp) toggle control privileges for a client\n'
@@ -280,12 +295,39 @@ class CoShellServer:
     # Parent
     self.child_pid = pid
     self.tty = fd
+    self.rows, self.cols = get_window_size(self.tty)
+    self.adjust_window_size()
 
   def client_listing(self):
     plurality = (len(self.clients) > 1 and "s") or ""
     heading = '\n[ %d client%s connected ]\n' % (len(self.clients),plurality)
     listing = '\n'.join( [str(client) for client in sorted(self.clients,key=lambda c: c.id)] )
     return heading + listing + '\n'
+
+  def install_sigwinch_handler(self):
+    signal.signal(signal.SIGWINCH, self.sigwinch_handler)
+
+  def remove_sigwinch_handler(self):
+    signal.signal(signal.SIGWINCH, signal.SIG_IGN)
+
+  def sigwinch_handler(self,sig,data):
+    self.remove_sigwinch_handler()
+    self.rows, self.cols = get_window_size(sys.stdin.fileno())
+    self.adjust_window_size()
+    self.install_sigwinch_handler()
+
+  def adjust_window_size(self):
+    row_sizes = [client.terminal_size[0] for client in self.clients]
+    row_sizes.append(self.rows)
+    col_sizes = [client.terminal_size[1] for client in self.clients]
+    col_sizes.append(self.cols)
+    new_rows = min(row_sizes)
+    new_cols = min(col_sizes)
+    if 0 not in (new_rows,new_cols):
+      if self.tty is not None:
+        set_window_size(self.tty, new_rows, new_cols)
+        for client in self.clients:
+          client.buffer_message(sigwinch=(new_rows,new_cols))
 
 
 class CoShellClient:
@@ -296,21 +338,33 @@ class CoShellClient:
     self.socket_send_buffer = ""
     self.socket = None
     self.name = USERNAME
+    self.recv_buffer = ""
+    self.incoming_message_size = 0
+    self.message_queue = []
 
   def run(self):
     self.socket = socket.socket()
     self.socket.connect( (self.server,self.port) )
-    self.socket_send_buffer = self.create_message(registration=self.name)
+    rows,cols = get_window_size( sys.stdin.fileno() )
+    registration_info = dict(name=self.name, rows=rows, cols=cols)
+    self.socket_send_buffer = self.create_message(registration=registration_info)
 
     stdin = sys.stdin.fileno()
     stdout = sys.stdout.fileno()
     tty.setcbreak(stdin)
     atexit.register(lambda: os.system("stty sane"))
 
-    toWrite = set([self.socket])
+    toWrite = set()
     while True:
+      if self.socket_send_buffer:
+        toWrite.add(self.socket)
       try:
-        readable = select([stdin, self.socket],toWrite,[])[0]
+        try:
+          readable = select([stdin, self.socket],toWrite,[])[0]
+        except selectError, e:
+          if e.args[0] == errno.EINTR: #SIGWINCH causes this
+            continue
+          raise
 
         if stdin in readable:
           data = os.read(stdin,CHUNK_SIZE)
@@ -318,11 +372,14 @@ class CoShellClient:
           self.socket_send_buffer += self.create_message(tty_input=data)
 
         if self.socket in readable:
-          data = self.socket.recv(CHUNK_SIZE)
-          if not data:
-            print "Connection closed"
+          try:
+            self.receive_messages()
+          except:
+            print 'Connection closed'
+            self.disconnect()
             return
-          self.tty_write_buffer += data
+          for message in self.get_messages():
+            self.handle_message(message)
 
         if self.tty_write_buffer:
           written = os.write(stdout,self.tty_write_buffer)
@@ -341,13 +398,72 @@ class CoShellClient:
             toWrite.discard(self.socket)
       except KeyboardInterrupt:
         self.socket_send_buffer += self.create_message(tty_input=INTERRUPT)
-	toWrite.add(self.socket)
+        toWrite.add(self.socket)
 
   def create_message(self,**obj):
     data = cPickle.dumps(obj)
     header = struct.pack("!L",len(data))
     packet = header + data
     return packet
+
+  def receive_messages(self):
+    packet = self.socket.recv(CHUNK_SIZE)
+    assert packet
+    self.recv_buffer += packet
+    self.__process_recv_buffer()
+
+  def __process_recv_buffer(self):
+    if not self.incoming_message_size and len(self.recv_buffer) >= 4:
+      header = self.recv_buffer[:4]
+      self.recv_buffer = self.recv_buffer[4:]
+      self.incoming_message_size = struct.unpack("!L",header)[0]
+      assert self.incoming_message_size > 0, "%s sent malformed packet" % self.name
+    if self.incoming_message_size and len(self.recv_buffer) >= self.incoming_message_size:
+      message_string = self.recv_buffer[:self.incoming_message_size]
+      self.recv_buffer = self.recv_buffer[self.incoming_message_size:]
+      message_object = cPickle.loads(message_string)
+      self.message_queue.append(message_object)
+      self.incoming_message_size = 0
+      self.__process_recv_buffer()
+
+  def get_messages(self):
+    messages = self.message_queue
+    self.message_queue = []
+    return messages
+
+  def handle_message(self,message):
+    if 'tty_input' in message:
+      self.tty_write_buffer += message['tty_input']
+    if 'sigwinch' in message:
+      (rows,cols) = message['sigwinch']
+      self.remove_sigwinch_handler()
+      set_window_size(sys.stdin.fileno(), rows, cols)
+      self.install_sigwinch_handler()
+
+  def disconnect(self):
+    self.socket.close()
+
+  def install_sigwinch_handler(self):
+    signal.signal(signal.SIGWINCH, self.sigwinch_handler)
+
+  def remove_sigwinch_handler(self):
+    signal.signal(signal.SIGWINCH, signal.SIG_IGN)
+
+  def sigwinch_handler(self,sig,data):
+    rows,cols = get_window_size(sys.stdin.fileno())
+    self.socket_send_buffer += self.create_message(sigwinch=(rows,cols))
+
+
+# Dynamic terminal size utilies
+def get_window_size(fd):
+  zeroes = struct.pack('HHHH', 0, 0, 0, 0)
+  size_info = fcntl.ioctl(fd, termios.TIOCGWINSZ, zeroes)
+  rows, cols = struct.unpack('HHHH', size_info)[0:2]
+  return (rows,cols)
+
+def set_window_size(fd, rows, cols):
+  size_info = struct.pack('HHHH', rows, cols, 0, 0)
+  fcntl.ioctl(fd, termios.TIOCSWINSZ, size_info)
 
 
 if __name__ == '__main__':
@@ -371,6 +487,7 @@ if __name__ == '__main__':
     hostname = args[0]
     coshell = CoShellClient(hostname,port=options.port)
   try:
+    coshell.install_sigwinch_handler()
     coshell.run()
     raise SystemExit(0)
   except (socket.error,socket.gaierror), e:
